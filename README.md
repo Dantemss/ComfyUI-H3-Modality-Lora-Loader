@@ -1,9 +1,6 @@
 # ComfyUI-H3-Modality-Lora-Loader
 
-UI Based on the excellent LoRA loader stack node by Plaguekind:  
-https://github.com/PlagueKind/ComfyUI-PlagueKind-Nodes
-
-## What it does
+## Purpose
 
 This node allows you to load up to 10 MiniMax H3 LoRAs in a single batch.  
 For each batch, you can select if the LoRAs should affect audio, video, text (token refiner and conditioning), or any combination of them.
@@ -34,3 +31,8 @@ Unknown LoRA targets are skipped with a warning message. Let me know if I missed
 ```sh
 python -m pytest --import-mode=importlib
 ```
+
+## Acknowledgements
+
+UI Based on the excellent LoRA loader stack node by Plaguekind:  
+https://github.com/PlagueKind/ComfyUI-PlagueKind-Nodes
