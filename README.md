@@ -1,8 +1,6 @@
 # ComfyUI-H3-Modality-Lora-Loader
 
-UI Based on the excellent LoRA loader stack node by Plaguekind.
-
-https://github.com/PlagueKind/ComfyUI-PlagueKind-Nodes
+UI Based on the excellent LoRA loader stack node by Plaguekind: https://github.com/PlagueKind/ComfyUI-PlagueKind-Nodes
 
 ## What it does
 
