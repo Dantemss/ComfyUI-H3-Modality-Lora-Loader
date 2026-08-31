@@ -531,7 +531,6 @@ app.registerExtension({
                     inp.addEventListener("change", syncData);
                     inp.addEventListener("input", syncData);
                     inp.addEventListener("click", (e) => {
-                        if (!chk.checked) return;
                         e.preventDefault();
                         e.stopPropagation();
                         showNumPopup(inp.value, label, (newVal) => {
