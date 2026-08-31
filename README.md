@@ -24,12 +24,9 @@ Each node adds 2 matrix multiplications per module affected by the LoRA, up to 5
 
 ## Known Issues
 
-Drag and drop has several bugs:
-- wrong row is dragged
-- inaccurate drop position
+Drag and drop issues:
 - rows drop above the add lora button
 - drop indicator is not showing
-- rows disabled after dropping
 
 LoRA refresh button is not working. "None" entries may appear in the LoRA list after clicking it.
 

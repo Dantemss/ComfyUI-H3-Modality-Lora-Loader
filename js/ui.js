@@ -305,86 +305,94 @@ app.registerExtension({
             }
 
             let dropIndicator = null;
-            
-            function showDropIndicator(beforeEl) {
+            let dragRow = null;
+
+            // Rows a drop can land between, in visual order and without the row
+            // being dragged, so the index below indexes this exact list.
+            function dropRows() {
+                return slots.map(s => s.row).filter(r => r !== dragRow);
+            }
+
+            function dropIndex(rows, y) {
+                for (const [i, el] of rows.entries()) {
+                    const box = el.getBoundingClientRect();
+                    if (y < box.top + box.height / 2) return i;
+                }
+                return rows.length;
+            }
+
+            function showDropIndicator(rows, index) {
                 if (!dropIndicator) {
                     dropIndicator = document.createElement("div");
                     dropIndicator.style.cssText = "position:absolute;height:3px;background:var(--primary-color);border-radius:2px;box-shadow:0 0 4px var(--primary-color);pointer-events:none;z-index:10;";
                     container.appendChild(dropIndicator);
                 }
-                
-                // Position the indicator based on where it should appear
-                let topPos;
-                if (beforeEl) {
-                    const containerRect = container.getBoundingClientRect();
-                    const beforeRect = beforeEl.getBoundingClientRect();
-                    topPos = beforeRect.top - containerRect.top;
-                } else {
-                    // Position before the add button
-                    const containerRect = container.getBoundingClientRect();
-                    const addBtnRect = addBtn.getBoundingClientRect();
-                    topPos = addBtnRect.top - containerRect.top;
-                }
-                
-                dropIndicator.style.top = `${topPos - 2}px`;
+                // An insert at the end of the list draws under the last row; the
+                // coordinates are container-relative or the line lands offscreen.
+                let edge;
+                if (rows[index]) edge = rows[index].getBoundingClientRect().top;
+                else if (rows.length) edge = rows[rows.length - 1].getBoundingClientRect().bottom;
+                else edge = addBtn.getBoundingClientRect().top;
+                dropIndicator.style.top = `${edge - container.getBoundingClientRect().top - 2}px`;
                 dropIndicator.style.left = "4px";
                 dropIndicator.style.right = "4px";
             }
-            
+
             function hideDropIndicator() {
                 if (dropIndicator) {
                     dropIndicator.remove();
                     dropIndicator = null;
                 }
             }
-            
-            function makeDraggable(row, slotObj) {
-                let dragSrcRow = null;
+
+            // One dragover/drop pair on the container instead of one per row: the
+            // rows sit in a flex gap, and per-row handlers go quiet exactly where
+            // the user aims, leaving no indicator and the previous one stale.
+            container.addEventListener("dragover", e => {
+                if (!dragRow) return;
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = "move";
+                const rows = dropRows();
+                showDropIndicator(rows, dropIndex(rows, e.clientY));
+            });
+
+            container.addEventListener("drop", e => {
+                if (!dragRow) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const row = dragRow;
+                const from = slots.findIndex(s => s.row === row);
+                if (from === -1) return;
+                const rows = dropRows();
+                const index = dropIndex(rows, e.clientY);
+                // ``slots`` is the order written to stack_data, so it is reordered
+                // together with the DOM instead of being left behind by the move.
+                const [slot] = slots.splice(from, 1);
+                slots.splice(index, 0, slot);
+                container.insertBefore(row, rows[index] ?? addBtn);
+                hideDropIndicator();
+                syncData();
+            });
+
+            function makeDraggable(row) {
                 row.draggable = false;
                 row.addEventListener("dragstart", e => {
                     e.stopPropagation();
                     row.style.opacity = "0.5";
-                    dragSrcRow = row;
+                    dragRow = row;
                     e.dataTransfer.effectAllowed = "move";
                     e.dataTransfer.setData("text/plain", "");
                 });
+                // The mouse is released over the drop target, never over the
+                // handle, so the flag has to be cleared here or the row keeps
+                // hijacking every later click inside its own inputs.
                 row.addEventListener("dragend", e => {
                     e.stopPropagation();
+                    row.draggable = false;
                     row.style.opacity = "1";
-                    dragSrcRow = null;
+                    dragRow = null;
                     hideDropIndicator();
-                });
-                row.addEventListener("dragover", e => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const rows = Array.from(container.querySelectorAll(":scope > div"))
-                        .filter(el => el !== addBtn && el !== dropIndicator);
-                    const after = rows.reduce((acc, el) => {
-                        if (!el || el === row) return acc;
-                        const box = el.getBoundingClientRect();
-                        const isBelow = e.clientY > box.top + box.height / 2;
-                        return isBelow ? el : acc;
-                    }, null);
-                    showDropIndicator(after);
-                    row.style.opacity = "0.5";
-                });
-                row.addEventListener("drop", e => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    // Move the row to the indicated position
-                    const rows = Array.from(container.querySelectorAll(":scope > div"))
-                        .filter(el => el !== addBtn && el !== dropIndicator);
-                    const after = rows.reduce((acc, el) => {
-                        if (!el || el === row) return acc;
-                        const box = el.getBoundingClientRect();
-                        const isBelow = e.clientY > box.top + box.height / 2;
-                        return isBelow ? el : acc;
-                    }, null);
-                    if (after == null) container.insertBefore(row, addBtn);
-                    else container.insertBefore(row, after);
-                    row.style.opacity = "1";
-                    hideDropIndicator();
-                    syncData();
                 });
             }
 
@@ -581,7 +589,7 @@ app.registerExtension({
                 rm.onclick = slotObj.remove;
                 row.append(handle, chk, sel, str.wrap, rm);
                 slots.push(slotObj);
-                makeDraggable(row, slotObj);
+                makeDraggable(row);
                 container.appendChild(row);
 
                 checkMissing();
