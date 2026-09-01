@@ -24,10 +24,6 @@ Each node adds 2 matrix multiplications per module affected by the LoRA, up to 5
 
 ## Known Issues
 
-Drag and drop issues:
-- rows drop above the add lora button
-- drop indicator is not showing
-
 LoRA refresh button is not working. "None" entries may appear in the LoRA list after clicking it.
 
 The node uses masks that, while small, could cause OOM due to VRAM fragmentation, which will either manifest as an OOM error or as severe slowdown.  

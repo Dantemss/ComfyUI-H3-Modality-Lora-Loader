@@ -110,6 +110,16 @@ app.registerExtension({
             });
 
             let slots = [];
+            // Rows live in their own element so the Add LoRA button sits below the
+            // whole list instead of being one of its children. Rows keep container
+            // as their offsetParent, so the indicator math stays container-relative.
+            const rowList = document.createElement("div");
+            Object.assign(rowList.style, {
+                display: "flex",
+                flexDirection: "column",
+                gap: "4px"
+            });
+            container.appendChild(rowList);
             let _rafPending = false;
             function syncSize() {
                 if (_rafPending) return;
@@ -135,6 +145,7 @@ app.registerExtension({
             const origOnRemoved = node.onRemoved;
             node.onRemoved = function () {
                 _liveInstances.delete(refreshLoraState);
+                endDrag();
                 origOnRemoved?.apply(this, arguments);
             };
 
@@ -307,6 +318,18 @@ app.registerExtension({
             let dropIndicator = null;
             let dragRow = null;
 
+            // ``drop`` only fires when the release lands on a target that accepted
+            // the drag, so a release outside the window, over the canvas, or after
+            // Esc never reaches onDrop. Teardown therefore hangs off dragend, which
+            // fires for every outcome, plus the two paths that can destroy the
+            // dragged row before dragend gets a chance to run.
+            function endDrag() {
+                dragRow = null;
+                document.removeEventListener("dragover", onDragOver);
+                document.removeEventListener("drop", onDrop);
+                hideDropIndicator();
+            }
+
             // Rows a drop can land between, in visual order and without the row
             // being dragged, so the index below indexes this exact list.
             function dropRows() {
@@ -324,16 +347,23 @@ app.registerExtension({
             function showDropIndicator(rows, index) {
                 if (!dropIndicator) {
                     dropIndicator = document.createElement("div");
-                    dropIndicator.style.cssText = "position:absolute;height:3px;background:var(--primary-color);border-radius:2px;box-shadow:0 0 4px var(--primary-color);pointer-events:none;z-index:10;";
+                    // The frontend defines no --primary-color, and an undefined
+                    // custom property makes the whole declaration drop out, so the
+                    // accent needs a literal fallback or the line is transparent.
+                    dropIndicator.style.cssText = "position:absolute;height:3px;background:var(--primary-color,#4f8cf7);border-radius:2px;box-shadow:0 0 6px rgba(79,140,247,0.75);pointer-events:none;z-index:10;";
                     container.appendChild(dropIndicator);
                 }
-                // An insert at the end of the list draws under the last row; the
-                // coordinates are container-relative or the line lands offscreen.
-                let edge;
-                if (rows[index]) edge = rows[index].getBoundingClientRect().top;
-                else if (rows.length) edge = rows[rows.length - 1].getBoundingClientRect().bottom;
-                else edge = addBtn.getBoundingClientRect().top;
-                dropIndicator.style.top = `${edge - container.getBoundingClientRect().top - 2}px`;
+                // An insert at the end of the list draws under the last row. Offset
+                // values live in the same untransformed space as style.top, so the
+                // line stays on target at any canvas zoom; getBoundingClientRect is
+                // scaled by the canvas and drops the line outside the widget.
+                let top;
+                if (rows[index]) top = rows[index].offsetTop - 2;
+                else if (rows.length) {
+                    const last = rows[rows.length - 1];
+                    top = last.offsetTop + last.offsetHeight - 2;
+                } else top = addBtn.offsetTop - 2;
+                dropIndicator.style.top = `${top}px`;
                 dropIndicator.style.left = "4px";
                 dropIndicator.style.right = "4px";
             }
@@ -345,22 +375,21 @@ app.registerExtension({
                 }
             }
 
-            // One dragover/drop pair on the container instead of one per row: the
-            // rows sit in a flex gap, and per-row handlers go quiet exactly where
-            // the user aims, leaving no indicator and the previous one stale.
-            container.addEventListener("dragover", e => {
+            // Bound to the document for the duration of a drag: the widget ends a
+            // few pixels under the last row, so a release aimed past it happens
+            // outside the widget and the browser cancels the drop silently unless
+            // something keeps calling preventDefault.
+            function onDragOver(e) {
                 if (!dragRow) return;
                 e.preventDefault();
-                e.stopPropagation();
                 e.dataTransfer.dropEffect = "move";
                 const rows = dropRows();
                 showDropIndicator(rows, dropIndex(rows, e.clientY));
-            });
+            }
 
-            container.addEventListener("drop", e => {
+            function onDrop(e) {
                 if (!dragRow) return;
                 e.preventDefault();
-                e.stopPropagation();
                 const row = dragRow;
                 const from = slots.findIndex(s => s.row === row);
                 if (from === -1) return;
@@ -370,10 +399,10 @@ app.registerExtension({
                 // together with the DOM instead of being left behind by the move.
                 const [slot] = slots.splice(from, 1);
                 slots.splice(index, 0, slot);
-                container.insertBefore(row, rows[index] ?? addBtn);
+                rowList.insertBefore(row, rows[index] ?? null);
                 hideDropIndicator();
                 syncData();
-            });
+            }
 
             function makeDraggable(row) {
                 row.draggable = false;
@@ -383,6 +412,8 @@ app.registerExtension({
                     dragRow = row;
                     e.dataTransfer.effectAllowed = "move";
                     e.dataTransfer.setData("text/plain", "");
+                    document.addEventListener("dragover", onDragOver);
+                    document.addEventListener("drop", onDrop);
                 });
                 // The mouse is released over the drop target, never over the
                 // handle, so the flag has to be cleared here or the row keeps
@@ -391,8 +422,7 @@ app.registerExtension({
                     e.stopPropagation();
                     row.draggable = false;
                     row.style.opacity = "1";
-                    dragRow = null;
-                    hideDropIndicator();
+                    endDrag();
                 });
             }
 
@@ -590,7 +620,7 @@ app.registerExtension({
                 row.append(handle, chk, sel, str.wrap, rm);
                 slots.push(slotObj);
                 makeDraggable(row);
-                container.appendChild(row);
+                rowList.appendChild(row);
 
                 checkMissing();
                 syncData();
@@ -623,6 +653,7 @@ app.registerExtension({
             const origConfigure = node.configure?.bind(node);
             node.configure = function (data) {
                 origConfigure?.(data);
+                endDrag();
                 for (const s of [...slots]) s.row.remove();
                 slots = [];
                 try {
