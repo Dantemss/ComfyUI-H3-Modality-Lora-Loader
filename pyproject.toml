@@ -1,7 +1,7 @@
 [project]
 name = "h3-modality-lora-loader"
 description = "LoRA loader for MiniMax H3 with adjustable per-modality strength values"
-version = "1.0.0"
+version = "1.0.1"
 license = "MIT"
 
 # classifiers = [
