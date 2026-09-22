@@ -349,7 +349,9 @@ class H3ModalityLoraLoader:
 
     @classmethod
     def INPUT_TYPES(cls):
-        lora_list = ["None"] + folder_paths.get_filename_list("loras")
+        # The slot picker adds its own "None" entry, so this stays a plain
+        # file list; adding it here too shows up as a duplicate in the menu.
+        lora_list = folder_paths.get_filename_list("loras")
         return {
             "required": {
                 "model": ("MODEL", {"description": "Base H3 model that will receive the modality LoRA stack."}),

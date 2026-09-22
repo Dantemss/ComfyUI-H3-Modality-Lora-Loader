@@ -23,16 +23,35 @@ function _notifyLiveInstances() {
     }
 }
 
-async function getLoraList(nodeData) {
-    try {
-        const list = nodeData?.input?.hidden?.available_loras?.[0];
-        if (Array.isArray(list)) {
-            _loraCache = ["None", ...list];
-            _notifyLiveInstances();
-        }
-    } catch (e) {
-        console.warn("LoRA fetch failed", e);
-    }
+// The JS owns the "None" entry; both sources below carry real files only.
+function setLoraCache(files) {
+    _loraCache = ["None", ...files];
+    _notifyLiveInstances();
+}
+
+function availableLoras(nodeInfo) {
+    return nodeInfo?.input?.hidden?.available_loras?.[0];
+}
+
+// Seed the cache from the node info that shipped with the page load.
+function getLoraList(nodeData) {
+    const list = availableLoras(nodeData);
+    if (Array.isArray(list))
+        setLoraCache(list);
+}
+
+// Ask the server for this node's info again, which re-reads the LoRA folder
+// from disk. Throws so the caller leaves the menu alone instead of pretending
+// the list is current.
+async function refreshLoraList() {
+    const res = await fetch(`/object_info/${NODE_TYPE}`, { cache: "no-store" });
+    if (!res.ok)
+        throw new Error(`HTTP ${res.status}`);
+    const info = await res.json();
+    const files = availableLoras(info?.[NODE_TYPE]);
+    if (!Array.isArray(files))
+        throw new Error(`No available_loras in ${NODE_TYPE} node info`);
+    setLoraCache(files);
 }
 
 function loraBasename(p) {
@@ -59,7 +78,7 @@ app.registerExtension({
     name: "ComfyUI.H3ModalityLoraLoader.DynamicSlotUI",
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== NODE_TYPE) return;
-        await getLoraList(nodeData);
+        getLoraList(nodeData);
 
         const orig = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
@@ -159,23 +178,6 @@ app.registerExtension({
                 syncSize();
             }
 
-            async function refreshCache() {
-                try {
-                    const response = await fetch("/object_info/" + NODE_TYPE, { cache: "no-store" });
-                    if (!response.ok) return;
-                    const info = await response.json();
-                    const refreshed = info?.[NODE_TYPE]?.input?.hidden?.available_loras?.[0]
-                        || info?.input?.hidden?.available_loras?.[0];
-                    if (Array.isArray(refreshed) && refreshed.length) {
-                        _loraCache = ["None", ...refreshed];
-                        slots.forEach(s => s.checkMissing?.());
-                        _notifyLiveInstances();
-                    }
-                } catch (e) {
-                    console.error(e);
-                }
-            }
-
             function sortTree(items) {
                 items.sort((a, b) => {
                     const af = a.has_submenu ? 1 : 0;
@@ -258,13 +260,17 @@ app.registerExtension({
                     box.style.cssText = `flex:1;padding:4px;background:#222;color:white;border:1px solid #444;border-radius:4px;font-size:12px;`;
                     const refreshBtn = document.createElement("button");
                     refreshBtn.innerHTML = "🔄";
-                    refreshBtn.title = "Refresh LoRA Cache";
+                    refreshBtn.title = "Reload LoRA list from disk";
                     refreshBtn.style.cssText = "margin-left:6px;padding:2px 6px;background:#333;border:none;border-radius:3px;cursor:pointer;";
-                    refreshBtn.onclick = (ev) => {
+                    // ContextMenu cancels pointerup on its root, which swallows the
+                    // compat click event, so the press has to be handled on mousedown.
+                    // The reloaded list shows up the next time a slot is opened.
+                    refreshBtn.addEventListener("mousedown", (ev) => {
+                        ev.preventDefault();
                         ev.stopPropagation();
-                        refreshCache();
-                        menu.close?.();
-                    };
+                        refreshLoraList().then(() => menu.close())
+                            .catch(e => console.warn("H3ModalityLoraLoader: LoRA reload failed", e));
+                    });
                     header.append(box, refreshBtn);
                     root.prepend(header);
                     const flatList = document.createElement("div");

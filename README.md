@@ -24,8 +24,6 @@ Each node adds 2 matrix multiplications per module affected by the LoRA, up to 5
 
 ## Known Issues
 
-LoRA refresh button is not working. "None" entries may appear in the LoRA list after clicking it.
-
 The node uses masks that, while small, could cause OOM due to VRAM fragmentation, which will either manifest as an OOM error or as severe slowdown.  
 This seems to be most relevant if you keep changing the LoRA strengths.  
 Unloading models and clearing the node cache, or simply restarting ComfyUI may be required from time to time.  

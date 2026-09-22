@@ -176,6 +176,7 @@ def test_node_io_contract():
         spec = module.H3ModalityLoraLoader.INPUT_TYPES()
     assert set(spec["required"]) == {"model", "stack_data", "audio", "video", "text"}
     assert "available_loras" in spec["hidden"]
+    assert spec["hidden"]["available_loras"][0] == ["a.safetensors"]
     assert module.H3ModalityLoraLoader.RETURN_TYPES == ("MODEL",)
     assert module.H3ModalityLoraLoader.FUNCTION == "apply_stack"
 
