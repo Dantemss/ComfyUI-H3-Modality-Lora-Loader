@@ -125,6 +125,19 @@ def apply_object_patches(model):
         setattr(obj, parts[-1], fn)
 
 
+def wrapper_depth(fn):
+    """How many of this node's wrappers ``fn`` nests.
+
+    ``prev_forward`` is one of a wrapper's closure variables, so following it
+    stops at the first object the node was handed instead of wrapped.
+    """
+    depth = 0
+    while "prev_forward" in fn.__code__.co_freevars:
+        depth += 1
+        fn = fn.__closure__[fn.__code__.co_freevars.index("prev_forward")].cell_contents
+    return depth
+
+
 def lora_sd(path, down, up, alpha=None):
     sd = {
         f"{path}.lora_down.weight": down,
@@ -354,7 +367,6 @@ def test_forward_wrapper_publishes_masks_and_calls_prev():
         return "called"
 
     wrapper = module._make_forward_wrapper(prev_forward, ctx, DIT, video=1.0, text=2.0, audio=3.0)
-    assert wrapper._h3_modality_lora is True
     out = wrapper((VIDEO_X, AUDIO_X), TIMESTEP, CONTEXT, transformer_options={"a": 1},
                   minimax_payload=PAYLOAD, extra=42)
     assert out == "called"
@@ -529,6 +541,64 @@ def test_apply_stack_e2e_chained_loaders_compose():
     qkv = dit.blocks[0].attn.qkv_proj
     base = x @ qkv.weight.T
     expected = base + ((x @ (E2E_DOWN * 2.0).T) @ E2E_UP.T + (x @ DOWN_B.T) @ UP_B.T) * MASK_EXPECTED[:, None]
+    assert torch.allclose(qkv(x), expected)
+
+
+def test_apply_stack_after_a_run_restarts_from_the_pristine_forward():
+    """A re-run must not nest inside the wrappers of the run before it.
+
+    ``ModelPatcher.patch_model`` writes object patches onto the shared model
+    modules and ``load_models_gpu`` detaches a replaced clone with
+    ``unpatch_all=False``, so the module attributes keep the previous run's
+    wrappers until the model is unloaded.  Nesting them would keep every edit's
+    LoRA factors device-resident and keep applying the strengths of the run
+    before, so the wrapper chain has to stay one node deep.
+    """
+    module = load_module()
+    model = make_model()
+    path = "diffusion_model.blocks.0.attn.qkv_proj"
+    lora = lora_sd(path, E2E_DOWN, E2E_UP, alpha=4.0)
+    first, = apply_stack(module, model, [("a.safetensors", 1.0)], {"a": lora},
+                         video=1.0, text=2.0, audio=3.0)
+    apply_object_patches(first)
+    dit = first.model.diffusion_model
+    dit.forward((VIDEO_X, AUDIO_X), TIMESTEP, CONTEXT,
+                transformer_options={}, minimax_payload=PAYLOAD)
+
+    second, = apply_stack(module, model, [("a.safetensors", 0.5)], {"a": lora},
+                          video=1.0, text=2.0, audio=3.0)
+    assert wrapper_depth(second.object_patches[path + ".forward"]) == 1
+    assert wrapper_depth(second.object_patches["diffusion_model.forward"]) == 1
+
+    apply_object_patches(second)
+    dit.forward((VIDEO_X, AUDIO_X), TIMESTEP, CONTEXT,
+                transformer_options={}, minimax_payload=PAYLOAD)
+    x = torch.ones(LAYOUT.seq_len, 8)
+    qkv = dit.blocks[0].attn.qkv_proj
+    expected = (x @ qkv.weight.T
+                + (x @ (E2E_DOWN * (2.0 * 0.5)).T) @ E2E_UP.T * MASK_EXPECTED[:, None])
+    assert torch.allclose(qkv(x), expected)
+
+
+def test_apply_stack_composes_with_another_object_patch_on_the_target():
+    module = load_module()
+    model = make_model()
+    path = "diffusion_model.blocks.0.attn.qkv_proj"
+    qkv = model.model.diffusion_model.blocks[0].attn.qkv_proj
+    base_forward = type(qkv).forward.__get__(qkv)
+    model.add_object_patch(path + ".forward", lambda x: base_forward(x) + 1.0)
+    lora = lora_sd(path, E2E_DOWN, E2E_UP, alpha=4.0)
+    patched, = apply_stack(module, model, [("a.safetensors", 1.0)], {"a": lora},
+                           video=1.0, text=2.0, audio=3.0)
+    assert wrapper_depth(patched.object_patches[path + ".forward"]) == 1
+    apply_object_patches(patched)
+    dit = patched.model.diffusion_model
+    dit.forward((VIDEO_X, AUDIO_X), TIMESTEP, CONTEXT,
+                transformer_options={}, minimax_payload=PAYLOAD)
+    x = torch.ones(LAYOUT.seq_len, 8)
+    qkv = dit.blocks[0].attn.qkv_proj
+    expected = (x @ qkv.weight.T + 1.0
+                + (x @ (E2E_DOWN * 2.0).T) @ E2E_UP.T * MASK_EXPECTED[:, None])
     assert torch.allclose(qkv(x), expected)
 
 

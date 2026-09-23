@@ -17,24 +17,20 @@ git clone https://github.com/Dantemss/ComfyUI-H3-Modality-Lora_Loader.git
 ```
 Or find ComfyUI-H3-Modality-Lora_Loader in ComfyUI Manager.
 
-## Performance Impact
+## Performance impact in addition to base LoRA loader nodes
 
 Batching provides better performance compared to single-LoRA nodes in a vacuum, although the modality filtering costs some performance.  
-Each node adds 2 matrix multiplications per module affected by the LoRA, up to 528 on the stock model, which exposes 264 modules.
+Each node adds 2 matrix multiplications per module affected by the LoRA per step, up to 528 per step on the stock model, which exposes 264 modules.
 
-## Known Issues
+## Known issues
 
-The node uses masks that, while small, could cause OOM due to VRAM fragmentation, which will either manifest as an OOM error or as severe slowdown.  
-This seems to be most relevant if you keep changing the LoRA strengths.  
-Unloading models and clearing the node cache, or simply restarting ComfyUI may be required from time to time.  
-Running ComfyUI with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` may or may not help a little bit.
-
+No known issues for now.
 
 ## Notes
 
 Unknown LoRA targets are skipped with a warning message. Let me know if I missed any.
 
-## Unit Testing
+## Unit testing
 
 ```sh
 python -m pytest --import-mode=importlib

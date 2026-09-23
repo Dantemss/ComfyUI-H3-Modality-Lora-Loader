@@ -17,8 +17,10 @@ with the Linear wrappers through a per-node ``MaskContext`` that keeps each
 mask on the device it is applied on.  Strengths that are equal across every
 modality a mask would separate are constant for that target, so they fold into
 the scalar scale and skip publishing a mask for it.  Chained loaders compose
-additively because every wrapper wraps the previous object patch instead of
-overwriting it.
+additively because every wrapper wraps the previous object patch of the patcher
+chain instead of overwriting it, and an untouched target is wrapped around the
+class ``forward`` so a previous run's still-applied wrapper can never end up
+nested inside the new one.
 """
 
 import json
@@ -72,6 +74,22 @@ _KIND_UNIFORM = "uniform"
 
 # kinds that scale per row of their input and therefore need a published mask
 _MASKED_KINDS = (_KIND_ROWS, _KIND_T_EMB)
+
+
+def _pristine_forward(module):
+    """Return ``module``'s class ``forward`` bound to the instance.
+
+    ``ModelPatcher.patch_model`` writes object patches straight onto the shared
+    model modules and a replaced clone is detached with ``unpatch_all=False``,
+    so between two runs a module attribute still holds the previous run's
+    wrapper.  Reading ``module.forward`` would then nest the new LoRA inside
+    that stale wrapper, which would keep another full set of LoRA factors alive
+    on the device for every strength edit and keep applying the old strengths
+    through the stale wrapper's own ``MaskContext``.  Binding the class
+    implementation keeps a wrapper chain exactly as deep as the loaders in the
+    current patcher chain.
+    """
+    return type(module).forward.__get__(module)
 
 
 def _mask_runtime(cached, mask, x):
@@ -282,7 +300,6 @@ def _make_forward_wrapper(prev_forward, mask_context, dit, video, text, audio,
                 mask_context.timestep_mask = _build_timestep_mask(dit, timestep, layout, video, audio, transformer_options, payload)
         return prev_forward(x, timestep, context, transformer_options=transformer_options,
                             minimax_payload=minimax_payload, **kwargs)
-    wrapper._h3_modality_lora = True
     return wrapper
 
 
@@ -331,7 +348,6 @@ def _make_linear_wrapper(prev_forward, mask_context, a_cat, b_cat, kind, scale):
         if mask is None or mask.shape[0] != x.shape[0]:
             return base
         return base.addmm_((x @ a_t).mul_(mask[:, None]), b_t)
-    wrapper._h3_modality_lora = True
     return wrapper
 
 
@@ -424,8 +440,12 @@ class H3ModalityLoraLoader:
                 kind, scale = _KIND_UNIFORM, video
             need_rows = need_rows or kind == _KIND_ROWS
             need_timestep = need_timestep or kind == _KIND_T_EMB
-            existing = patched.object_patches.get(path + ".forward")
-            prev_forward = existing if getattr(existing, "_h3_modality_lora", False) else self._resolve_linear_forward(diffusion_model, path)
+            # An upstream loader's wrapper for this target rides in the patcher
+            # chain, so stacked loaders compose; an untouched target starts from
+            # the pristine forward instead of a previous run's stale wrapper.
+            prev_forward = patched.object_patches.get(path + ".forward")
+            if prev_forward is None:
+                prev_forward = self._resolve_linear_forward(diffusion_model, path)
             patched.add_object_patch(path + ".forward", _make_linear_wrapper(
                 prev_forward, mask_context, a_cat, b_cat, kind, scale))
 
@@ -433,8 +453,9 @@ class H3ModalityLoraLoader:
         # top-level wrapper so every Linear target shares one mask source;
         # stacks of only scalar-scaled targets need no mask and no wrapper.
         if need_rows or need_timestep:
-            existing = patched.object_patches.get("diffusion_model.forward")
-            prev_forward = existing if getattr(existing, "_h3_modality_lora", False) else diffusion_model.forward
+            prev_forward = patched.object_patches.get("diffusion_model.forward")
+            if prev_forward is None:
+                prev_forward = _pristine_forward(diffusion_model)
             patched.add_object_patch("diffusion_model.forward", _make_forward_wrapper(
                 prev_forward, mask_context, diffusion_model, video, text, audio,
                 need_rows=need_rows, need_timestep=need_timestep))
@@ -482,4 +503,4 @@ class H3ModalityLoraLoader:
         obj = diffusion_model
         for part in path.split(".")[1:]:
             obj = obj[int(part)] if part.isdigit() else getattr(obj, part)
-        return obj.forward
+        return _pristine_forward(obj)
