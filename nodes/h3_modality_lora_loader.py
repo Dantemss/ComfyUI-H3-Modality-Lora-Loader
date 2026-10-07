@@ -153,9 +153,11 @@ def _parse_stack_data(stack_data):
         return []
     try:
         raw = json.loads(stack_data)
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (json.JSONDecodeError, TypeError, ValueError) as e:
+        logging.warning("H3 Modality LoRA Loader: failed to parse stack_data JSON: %s", e)
         return []
     if not isinstance(raw, list):
+        logging.warning("H3 Modality LoRA Loader: stack_data JSON is not a list, ignoring.")
         return []
     slots = []
     for entry in raw:
@@ -398,9 +400,32 @@ class H3ModalityLoraLoader:
 
         # Group LoRA specs across all slots by target Linear module path.
         layer_specs = {}
-        for slot in slots:
-            sd = comfy.utils.load_torch_file(_get_lora_path(slot["lora"]), safe_load=True)
-            for path, (down, up, alpha) in _lora_module_paths(sd).items():
+        for i, slot in enumerate(slots):
+            lora_name = slot["lora"]
+            slot_label = f"slot {i + 1}"
+            # Resolve the file path — raises FileNotFoundError with a clear
+            # message if the LoRA is missing from the loras folder.
+            try:
+                lora_path = _get_lora_path(lora_name)
+            except FileNotFoundError as e:
+                raise FileNotFoundError(f"{slot_label}: {e}") from e
+            # Load the state dict — wrap torch loading so corrupt or
+            # incompatible files produce a descriptive RuntimeError.
+            try:
+                sd = comfy.utils.load_torch_file(lora_path, safe_load=True)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to load LoRA '{lora_name}' ({slot_label}): {e}"
+                ) from e
+            # Validate that the file actually contains LoRA weights.
+            paths = _lora_module_paths(sd)
+            if not paths:
+                raise ValueError(
+                    f"LoRA '{lora_name}' ({slot_label}) contains no valid LoRA "
+                    f"weights (expected lora_down/lora_up or lora_A/lora_B "
+                    f"tensor pairs)."
+                )
+            for path, (down, up, alpha) in paths.items():
                 # Convert path using key_map (handles both underscore and dot formats)
                 actual_path = key_map.get(path, path)
                 rank = int(down.shape[0])

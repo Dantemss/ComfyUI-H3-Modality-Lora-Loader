@@ -209,7 +209,10 @@ app.registerExtension({
                         const part = parts[i];
                         const folderKey = parts.slice(0, i + 1).join("/");
                         if (!folders.has(folderKey)) {
-                            const existing = current.find(x => x.content === "📁 " + part);
+                            // ``let``, not ``const``: the fallback below reassigns it, and a
+                            // const reassignment throws, killing the whole menu build before
+                            // the ContextMenu is opened. Only reachable with subfolders.
+                            let existing = current.find(x => x.content === "📁 " + part);
                             if (!existing) {
                                 existing = { content: "📁 " + part, has_submenu: true, submenu: { options: [] } };
                                 current.push(existing);
