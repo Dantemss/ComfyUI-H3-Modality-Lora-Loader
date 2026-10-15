@@ -5,7 +5,6 @@
 This node allows you to load up to 10 MiniMax H3 LoRAs in a single batch.  
 For each batch, you can select if the LoRAs should affect audio, video, text (token refiner and conditioning), or any combination of them.
 
-
 This way you can prevent video-only LoRAs from affecting audio, and prevent audio-only LoRAs from affecting video.  
 Note that there's still a bit of an effect due to self-attention but it should be much smaller than the usual effect.
 
@@ -22,13 +21,11 @@ Or find ComfyUI-H3-Modality-Lora_Loader in ComfyUI Manager.
 Batching provides better performance compared to single-LoRA nodes in a vacuum, although the modality filtering costs some performance.  
 Each node adds 2 matrix multiplications per module affected by the LoRA per step, up to 528 per step on the stock model, which exposes 264 modules.
 
-## Known issues
-
-No known issues for now.
-
 ## Notes
 
-Unknown LoRA targets are skipped with a warning message. Let me know if I missed any.
+The evict model option may help prevent CUDA errors on reruns when settings have changed.
+
+Unknown LoRA targets are skipped with a warning message. Let me know if you encounter any warnings.
 
 ## Unit testing
 
