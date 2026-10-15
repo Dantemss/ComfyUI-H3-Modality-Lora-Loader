@@ -374,9 +374,10 @@ class H3ModalityLoraLoader:
             "required": {
                 "model": ("MODEL", {"description": "Base H3 model that will receive the modality LoRA stack."}),
                 "stack_data": ("STRING", {"default": "[]", "multiline": False, "description": "JSON-encoded LoRA slot data managed by the custom UI."}),
-                "audio": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 5.0, "step": 0.01, "description": "Global audio modality strength."}),
-                "video": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 5.0, "step": 0.01, "description": "Global video modality strength."}),
-                "text": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 5.0, "step": 0.01, "description": "Global text modality strength."}),
+                "audio": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 5.0, "step": 0.01, "description": "Audio modality strength."}),
+                "video": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 5.0, "step": 0.01, "description": "Video modality strength."}),
+                "text": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 5.0, "step": 0.01, "description": "Text (conditioning/token refiner) modality strength."}),
+                "evict_model": ("BOOLEAN", {"default": False, "description": "Evict the model to RAM before patching. May prevent crashes after changing settings."}),
             },
             "hidden": {
                 "available_loras": (lora_list, {"description": "Internal list of LoRA files used by the custom slot picker."}),
@@ -387,7 +388,7 @@ class H3ModalityLoraLoader:
     FUNCTION = "apply_stack"
     CATEGORY = "loaders/lora"
 
-    def apply_stack(self, model, stack_data="[]", audio=1.0, video=1.0, text=1.0, available_loras=None):
+    def apply_stack(self, model, stack_data="[]", audio=1.0, video=1.0, text=1.0, evict_model=False, available_loras=None):
         slots = _parse_stack_data(stack_data)
         if not slots:
             return (model,)
@@ -445,6 +446,10 @@ class H3ModalityLoraLoader:
             )
         if not supported:
             raise ValueError("No supported H3 LoRA Linear layers found in the provided LoRAs.")
+
+        if evict_model:
+            # Move the DiT to RAM before cloning so the clone's reload is a fresh GPU allocation.
+            model.partially_unload(model.offload_device, memory_to_free=1e32)
 
         patched = model.clone()
         mask_context = MaskContext()

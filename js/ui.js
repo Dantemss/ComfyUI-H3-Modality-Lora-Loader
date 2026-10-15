@@ -9,7 +9,7 @@
 import { app } from "../../scripts/app.js";
 
 const NODE_TYPE = "H3ModalityLoraLoader";
-const MAX_SLOTS = 10;
+const MAX_SLOTS = 100;
 const MIN_SIZE = [420, 120];
 let _loraCache = ["None"];
 // Every on-canvas node instance registers a refresh callback here so its
@@ -256,6 +256,7 @@ app.registerExtension({
                 requestAnimationFrame(() => {
                     const root = menu?.root;
                     if (!root) return;
+                    root.style.overflowX = "hidden";
                     const header = document.createElement("div");
                     header.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:5px 8px;border-bottom:1px solid #444;";
                     const box = document.createElement("input");
@@ -271,13 +272,16 @@ app.registerExtension({
                     refreshBtn.addEventListener("mousedown", (ev) => {
                         ev.preventDefault();
                         ev.stopPropagation();
-                        refreshLoraList().then(() => menu.close())
+                        refreshLoraList().then(() => {
+                            menu.close();
+                            openLoraMenu(e, onSelect);
+                        })
                             .catch(e => console.warn("H3ModalityLoraLoader: LoRA reload failed", e));
                     });
                     header.append(box, refreshBtn);
                     root.prepend(header);
                     const flatList = document.createElement("div");
-                    flatList.style.cssText = "display:none;max-height:320px;overflow-y:auto;min-width:320px;width:100%;box-sizing:border-box;";
+                    flatList.style.cssText = "display:none;max-height:320px;overflow-y:auto;overflow-x:hidden;min-width:320px;width:100%;box-sizing:border-box;";
                     root.appendChild(flatList);
                     const treeEntries = Array.from(root.querySelectorAll(".litemenu-entry"));
                     let currentFolderFilter = null;
