@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This node allows you to load up to 10 MiniMax H3 LoRAs in a single batch.  
+This node allows you to load up to 100 MiniMax H3 LoRAs in a single batch.  
 For each batch, you can select if the LoRAs should affect audio, video, text (token refiner and conditioning), or any combination of them.
 
 This way you can prevent video-only LoRAs from affecting audio, and prevent audio-only LoRAs from affecting video.  
