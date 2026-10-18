@@ -18,14 +18,14 @@ Or find ComfyUI-H3-Modality-Lora_Loader in ComfyUI Manager.
 
 ## Performance impact in addition to base LoRA loader nodes
 
-Batching provides better performance compared to single-LoRA nodes in a vacuum, although the modality filtering costs some performance.  
+Batching provides better performance compared to single-LoRA nodes in a vacuum, although the modality filtering costs some performance:  
 Each node adds 2 matrix multiplications per module affected by the LoRA per step, up to 528 per step on the stock model, which exposes 264 modules.
 
 ## Notes
 
 The evict model option may help prevent CUDA errors on reruns when settings have changed.
 
-Unknown LoRA targets are skipped with a warning message. Let me know if you encounter any warnings.
+Unknown LoRA targets are skipped with a warning message. Please report any warnings you encounter.
 
 ## Unit testing
 

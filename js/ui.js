@@ -140,12 +140,20 @@ app.registerExtension({
             });
             container.appendChild(rowList);
             let _rafPending = false;
+            // Measure the content from the children, not container.scrollHeight:
+            // scrollHeight is max(content, element height), and LiteGraph sets the
+            // container's own height to the node's (stale) widget area, so after
+            // removing a row it still reports the old larger height and the node
+            // never shrinks.
+            function contentHeight() {
+                return rowList.offsetHeight + addBtn.offsetHeight + 4 /* gap */ + 8 /* padding */;
+            }
             function syncSize() {
                 if (_rafPending) return;
                 _rafPending = true;
                 requestAnimationFrame(() => {
                     _rafPending = false;
-                    const targetH = baseHeight + container.scrollHeight + 12;
+                    const targetH = baseHeight + contentHeight() + 12;
                     node.setSize([Math.max(node.size[0], MIN_SIZE[0]), Math.max(targetH, minHeight())]);
                 });
             }
@@ -229,7 +237,7 @@ app.registerExtension({
                 return tree;
             }
 
-            function openLoraMenu(e, onSelect) {
+            function openLoraMenu(e, onSelect, initialQuery = "", initialFolder = null) {
                 const list = _loraCache;
                 const searchIndex = [];
                 let noneAdded = false;
@@ -256,25 +264,40 @@ app.registerExtension({
                 requestAnimationFrame(() => {
                     const root = menu?.root;
                     if (!root) return;
+                    // A stable floor width keeps the menu from changing size when
+                    // the search field is used (the flat list is 320 wide), which
+                    // would otherwise make the ContextMenu reposition on refresh.
+                    root.style.minWidth = "320px";
                     root.style.overflowX = "hidden";
                     const header = document.createElement("div");
                     header.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:5px 8px;border-bottom:1px solid #444;";
                     const box = document.createElement("input");
                     box.placeholder = "Search LoRA...";
+                    box.value = initialQuery;
                     box.style.cssText = `flex:1;padding:4px;background:#222;color:white;border:1px solid #444;border-radius:4px;font-size:12px;`;
                     const refreshBtn = document.createElement("button");
                     refreshBtn.innerHTML = "🔄";
                     refreshBtn.title = "Reload LoRA list from disk";
-                    refreshBtn.style.cssText = "margin-left:6px;padding:2px 6px;background:#333;border:none;border-radius:3px;cursor:pointer;";
+                    refreshBtn.style.cssText = "margin-left:6px;padding:2px 6px;background:#333;border:1px solid #444;border-radius:3px;cursor:pointer;";
+                    // The menu is appended to document.body, outside the node, so
+                    // --primary-color doesn't cascade here; use a literal fallback.
+                    refreshBtn.addEventListener("mouseenter", () => {
+                        refreshBtn.style.borderColor = "var(--primary-color, #4f8cf7)";
+                    });
+                    refreshBtn.addEventListener("mouseleave", () => {
+                        refreshBtn.style.borderColor = "#444";
+                    });
                     // ContextMenu cancels pointerup on its root, which swallows the
                     // compat click event, so the press has to be handled on mousedown.
                     // The reloaded list shows up the next time a slot is opened.
                     refreshBtn.addEventListener("mousedown", (ev) => {
                         ev.preventDefault();
                         ev.stopPropagation();
+                        const query = box.value;
+                        const folder = currentFolderFilter;
                         refreshLoraList().then(() => {
                             menu.close();
-                            openLoraMenu(e, onSelect);
+                            openLoraMenu(e, onSelect, query, folder);
                         })
                             .catch(e => console.warn("H3ModalityLoraLoader: LoRA reload failed", e));
                     });
@@ -284,7 +307,7 @@ app.registerExtension({
                     flatList.style.cssText = "display:none;max-height:320px;overflow-y:auto;overflow-x:hidden;min-width:320px;width:100%;box-sizing:border-box;";
                     root.appendChild(flatList);
                     const treeEntries = Array.from(root.querySelectorAll(".litemenu-entry"));
-                    let currentFolderFilter = null;
+                    let currentFolderFilter = initialFolder;
                     function renderSearchResults(q) {
                         flatList.innerHTML = "";
                         const matches = searchIndex.filter(entry => {
@@ -318,12 +341,14 @@ app.registerExtension({
                             flatList.appendChild(el);
                         }
                     }
-                    box.addEventListener("input", () => {
+                    function applyFilter() {
                         const q = box.value.toLowerCase().trim();
                         treeEntries.forEach(el => el.style.display = q ? "none" : "");
                         flatList.style.display = q ? "block" : "none";
                         renderSearchResults(q);
-                    });
+                    }
+                    box.addEventListener("input", applyFilter);
+                    if (initialQuery) applyFilter();
                     box.focus();
                 });
             }
@@ -430,11 +455,21 @@ app.registerExtension({
                 });
                 // The mouse is released over the drop target, never over the
                 // handle, so the flag has to be cleared here or the row keeps
-                // hijacking every later click inside its own inputs.
+                // hijacking every later click inside its own inputs. The hover
+                // highlight (primary border) is set on mouseenter, but the
+                // release happens over the drop target so mouseleave never
+                // fires and the highlight sticks; reset it here.
                 row.addEventListener("dragend", e => {
                     e.stopPropagation();
                     row.draggable = false;
                     row.style.opacity = "1";
+                    row.style.borderColor = "var(--border-color)";
+                    row.style.background = "var(--comfy-menu-bg)";
+                    const selEl = row.querySelector('[role="button"]');
+                    if (selEl) {
+                        selEl.style.borderColor = "var(--border-color)";
+                        selEl.style.background = "var(--comfy-input-bg)";
+                    }
                     endDrag();
                 });
             }
@@ -655,8 +690,8 @@ app.registerExtension({
 
             const loraUIWidget = node.addDOMWidget("lora_ui", "HTML", container);
             loraUIWidget.computeLayoutSize = () => ({
-                minHeight: container.scrollHeight + 8,
-                maxHeight: container.scrollHeight + 8,
+                minHeight: contentHeight() + 8,
+                maxHeight: contentHeight() + 8,
                 minWidth: 0
             });
 

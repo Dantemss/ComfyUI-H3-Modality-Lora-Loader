@@ -390,6 +390,10 @@ class H3ModalityLoraLoader:
 
     def apply_stack(self, model, stack_data="[]", audio=1.0, video=1.0, text=1.0, evict_model=False, available_loras=None):
         slots = _parse_stack_data(stack_data)
+        if evict_model:
+            # Move the DiT to RAM so the reload is a fresh GPU allocation rather
+            # than reusing the previous run's VMM state.
+            model.partially_unload(model.offload_device, memory_to_free=1e32)
         if not slots:
             return (model,)
         diffusion_model = model.model.diffusion_model
@@ -446,10 +450,6 @@ class H3ModalityLoraLoader:
             )
         if not supported:
             raise ValueError("No supported H3 LoRA Linear layers found in the provided LoRAs.")
-
-        if evict_model:
-            # Move the DiT to RAM before cloning so the clone's reload is a fresh GPU allocation.
-            model.partially_unload(model.offload_device, memory_to_free=1e32)
 
         patched = model.clone()
         mask_context = MaskContext()
