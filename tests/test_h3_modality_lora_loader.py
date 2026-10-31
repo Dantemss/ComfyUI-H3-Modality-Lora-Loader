@@ -187,7 +187,7 @@ def test_node_io_contract():
     module = load_module()
     with mock.patch("folder_paths.get_filename_list", return_value=["a.safetensors"]):
         spec = module.H3ModalityLoraLoader.INPUT_TYPES()
-    assert set(spec["required"]) == {"model", "stack_data", "audio", "video", "text"}
+    assert set(spec["required"]) == {"model", "stack_data", "audio", "video", "text", "evict_model"}
     assert "available_loras" in spec["hidden"]
     assert spec["hidden"]["available_loras"][0] == ["a.safetensors"]
     assert module.H3ModalityLoraLoader.RETURN_TYPES == ("MODEL",)
