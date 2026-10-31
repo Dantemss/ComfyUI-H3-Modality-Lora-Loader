@@ -30,7 +30,7 @@ Unknown LoRA targets are skipped with a warning message. Please report any warni
 ## Unit testing
 
 ```sh
-python -m pytest --import-mode=importlib
+python -m pytest
 ```
 
 ## Acknowledgements
