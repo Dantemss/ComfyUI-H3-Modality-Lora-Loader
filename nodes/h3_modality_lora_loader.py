@@ -390,6 +390,10 @@ def _make_linear_wrapper(prev_forward, mask_context, a_cat, b_cat, lokr_specs, k
         if a_cat is not None:
             runtime = cache.get(key)
             if runtime is None:
+                # A new device or dtype means the cached copy is on a device the
+                # delta is no longer added to, so drop it before allocating the
+                # replacement; the dict then holds one device's worth at most.
+                cache.clear()
                 runtime = (a_cat.to(device=x.device, dtype=x.dtype).T,
                            b_cat.to(device=x.device, dtype=x.dtype).T)
                 cache[key] = runtime
@@ -401,6 +405,7 @@ def _make_linear_wrapper(prev_forward, mask_context, a_cat, b_cat, lokr_specs, k
         if lokr_specs:
             cached = lokr_cache.get(key)
             if cached is None:
+                lokr_cache.clear()
                 cached = [(w1.to(device=x.device, dtype=x.dtype),
                            w2.to(device=x.device, dtype=x.dtype))
                           for w1, w2 in lokr_specs]
