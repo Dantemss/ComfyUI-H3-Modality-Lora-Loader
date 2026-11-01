@@ -249,7 +249,7 @@ def test_build_timestep_mask_dedupes_cond_values():
 def test_linear_wrapper_a_cat_none_passthrough():
     module = load_module()
     prev = MockLinear(8, 8)
-    wrapper = module._make_linear_wrapper(prev.forward, module.MaskContext(), None, None, module._KIND_ROWS, None)
+    wrapper = module._make_linear_wrapper(prev.forward, module.MaskContext(), None, None, None, module._KIND_ROWS, None)
     x = torch.zeros(4, 8)
     out = wrapper(x)
     assert torch.equal(out, prev(x))
@@ -259,7 +259,7 @@ def test_linear_wrapper_rows_without_mask_passthrough():
     module = load_module()
     prev = MockLinear(8, 8)
     ctx = module.MaskContext()
-    wrapper = module._make_linear_wrapper(prev.forward, ctx, torch.ones(2, 8), torch.ones(8, 2), module._KIND_ROWS, None)
+    wrapper = module._make_linear_wrapper(prev.forward, ctx, torch.ones(2, 8), torch.ones(8, 2), None, module._KIND_ROWS, None)
     x = torch.ones(4, 8)
     out = wrapper(x)
     assert torch.equal(out, prev.forward(x))
@@ -270,7 +270,7 @@ def test_linear_wrapper_rows_shape_mismatch_passthrough():
     prev = MockLinear(8, 8)
     ctx = module.MaskContext()
     ctx.mask = torch.ones(3)
-    wrapper = module._make_linear_wrapper(prev.forward, ctx, torch.ones(2, 8), torch.ones(8, 2), module._KIND_ROWS, None)
+    wrapper = module._make_linear_wrapper(prev.forward, ctx, torch.ones(2, 8), torch.ones(8, 2), None, module._KIND_ROWS, None)
     x = torch.ones(4, 8)
     out = wrapper(x)
     assert torch.equal(out, prev.forward(x))
@@ -282,7 +282,7 @@ def test_linear_wrapper_rows_applies_mask():
     ctx = module.MaskContext()
     ctx.mask = torch.tensor([1.0, 0.0, 2.0, 0.5])
     down, up = torch.ones(2, 8), torch.ones(8, 2)
-    wrapper = module._make_linear_wrapper(prev.forward, ctx, down, up, module._KIND_ROWS, None)
+    wrapper = module._make_linear_wrapper(prev.forward, ctx, down, up, None, module._KIND_ROWS, None)
     x = torch.ones(4, 8)
     base = prev.forward(x)
     out = wrapper(x)
@@ -296,7 +296,7 @@ def test_linear_wrapper_block_adaln_timestep_rows():
     ctx = module.MaskContext()
     ctx.timestep_mask = torch.tensor([1.0, 3.0])
     down, up = torch.ones(2, 8), torch.ones(24, 2)
-    wrapper = module._make_linear_wrapper(prev.forward, ctx, down, up, module._KIND_T_EMB, None)
+    wrapper = module._make_linear_wrapper(prev.forward, ctx, down, up, None, module._KIND_T_EMB, None)
     x = torch.ones(2, 8)
     base = prev.forward(x)
     out = wrapper(x)
@@ -310,7 +310,7 @@ def test_linear_wrapper_final_adaln_timestep_rows():
     ctx = module.MaskContext()
     ctx.timestep_mask = torch.tensor([1.0, 3.0, 1.0, 3.0])
     down, up = torch.ones(2, 8), torch.ones(24, 2)
-    wrapper = module._make_linear_wrapper(prev.forward, ctx, down, up, module._KIND_T_EMB, None)
+    wrapper = module._make_linear_wrapper(prev.forward, ctx, down, up, None, module._KIND_T_EMB, None)
     x = torch.ones(4, 8)
     base = prev.forward(x)
     out = wrapper(x)
@@ -322,7 +322,7 @@ def test_linear_wrapper_final_adaln_without_mask_passthrough():
     module = load_module()
     prev = MockLinear(8, 24)
     ctx = module.MaskContext()
-    wrapper = module._make_linear_wrapper(prev.forward, ctx, torch.ones(2, 8), torch.ones(24, 2), module._KIND_T_EMB, None)
+    wrapper = module._make_linear_wrapper(prev.forward, ctx, torch.ones(2, 8), torch.ones(24, 2), None, module._KIND_T_EMB, None)
     x = torch.ones(3, 8)
     assert torch.equal(wrapper(x), prev.forward(x))
 
@@ -334,7 +334,7 @@ def test_linear_wrapper_uniform_kinds_scale_by_single_strength():
                            (module._KIND_TEXT_UNIFORM, 2.0)):
         prev = MockLinear(8, 8)
         down, up = torch.ones(2, 8), torch.ones(8, 2)
-        wrapper = module._make_linear_wrapper(prev.forward, module.MaskContext(), down, up, kind, strength)
+        wrapper = module._make_linear_wrapper(prev.forward, module.MaskContext(), down, up, None, kind, strength)
         x = torch.ones(4, 8)
         base = prev.forward(x)
         out = wrapper(x)
@@ -347,7 +347,7 @@ def test_linear_wrapper_refiner_uses_text_strength():
     prev = MockLinear(8, 8)
     ctx = module.MaskContext()
     down, up = torch.ones(2, 8), torch.ones(8, 2)
-    wrapper = module._make_linear_wrapper(prev.forward, ctx, down, up, module._KIND_REFINER, 2.0)
+    wrapper = module._make_linear_wrapper(prev.forward, ctx, down, up, None, module._KIND_REFINER, 2.0)
     x = torch.ones(3, 8)
     base = prev.forward(x)
     out = wrapper(x)
@@ -434,10 +434,89 @@ def test_lora_module_paths_groups_both_key_conventions():
         "diffusion_model.blocks.0.attn.qkv_proj",
         "diffusion_model.token_refiner.0.attn.qkv_proj",
     }
-    d, u, a = specs["diffusion_model.blocks.0.attn.qkv_proj"]
+    tag, d, u, a = specs["diffusion_model.blocks.0.attn.qkv_proj"]
+    assert tag == "lora"
     assert torch.equal(d, down) and torch.equal(u, up) and a == 4.0
-    d, u, a = specs["diffusion_model.token_refiner.0.attn.qkv_proj"]
+    tag, d, u, a = specs["diffusion_model.token_refiner.0.attn.qkv_proj"]
+    assert tag == "lora"
     assert torch.equal(d, down) and torch.equal(u, up) and a == 2.0
+
+
+def test_lora_module_paths_lokr_spec_format():
+    module = load_module()
+    # LoKr format: w2 is [out/r, in/r], w1 is [r, r]
+    w2 = torch.randn(4, 8)
+    w1 = torch.randn(2, 2)
+    path = "diffusion_model.blocks.0.attn.qkv_proj"
+    sd = {
+        f"{path}.lokr_w1": w1,
+        f"{path}.lokr_w2": w2,
+        f"{path}.alpha": 9999220736.0,  # sentinel, not a real alpha
+    }
+    specs = module._lora_module_paths(sd)
+    assert set(specs) == {path}
+    tag, got_w1, got_w2 = specs[path]
+    assert tag == "lokr"
+    assert torch.equal(got_w1, w1) and torch.equal(got_w2, w2)
+
+
+def test_lokr_delta_matches_kron():
+    module = load_module()
+    # w2: [out/r, in/r], w1: [r, r]
+    r = 2
+    out_r, in_r = 3, 4
+    w2 = torch.randn(out_r, in_r)
+    w1 = torch.randn(r, r)
+    x = torch.randn(5, in_r * r)
+    # compact einsum path
+    out = module._lokr_delta(x, w2, w1)
+    # full kron reference (official LoKr order: kron(w1, w2))
+    full = torch.kron(w1, w2)  # [out, in]
+    expected = x @ full.T
+    assert out.shape == (5, out_r * r)
+    assert torch.allclose(out, expected, atol=1e-5)
+
+
+def test_linear_wrapper_lokr_only():
+    module = load_module()
+    prev = MockLinear(8, 8)
+    # w2: [out/r, in/r] = [2, 4], w1: [r, r] = [2, 2]
+    # in = 4*2 = 8, out = 2*2 = 4 ... but MockLinear is 8->8
+    # Use w2: [4, 2], w1: [2, 2] -> in=4, out=8 ... in must be 8
+    # w2: [2, 4], w1: [2, 2] -> in=8, out=4 ... out must be 8
+    # w2: [4, 2], w1: [2, 2] -> in=4, out=8 ... in must be 8
+    # Need in_r * r = 8 and out_r * r = 8, so r=2, in_r=4, out_r=4
+    w2 = torch.randn(4, 4)
+    w1 = torch.randn(2, 2)
+    wrapper = module._make_linear_wrapper(prev.forward, module.MaskContext(),
+                                          None, None, [(w1, w2)],
+                                          module._KIND_UNIFORM, 1.0)
+    x = torch.randn(3, 8)
+    base = prev.forward(x)
+    out = wrapper(x)
+    full = torch.kron(w1, w2)  # [8, 8]
+    expected = base + x @ full.T
+    assert torch.allclose(out, expected, atol=1e-5)
+
+
+def test_linear_wrapper_mixed_lora_and_lokr():
+    module = load_module()
+    prev = MockLinear(8, 8)
+    down = torch.ones(2, 8)
+    up = torch.ones(8, 2)
+    w2 = torch.randn(4, 4)
+    w1 = torch.randn(2, 2)
+    wrapper = module._make_linear_wrapper(prev.forward, module.MaskContext(),
+                                          down, up, [(w1, w2)],
+                                          module._KIND_UNIFORM, 1.0)
+    x = torch.randn(3, 8)
+    base = prev.forward(x)
+    out = wrapper(x)
+    lora_delta = (x @ down.T) @ up.T
+    full = torch.kron(w1, w2)
+    lokr_delta = x @ full.T
+    expected = base + lora_delta + lokr_delta
+    assert torch.allclose(out, expected, atol=1e-5)
 
 
 E2E_DOWN = torch.ones(2, 8)
@@ -673,7 +752,7 @@ def test_linear_wrapper_uniform_kind_scales_by_global_strength():
     module = load_module()
     prev = MockLinear(8, 8)
     down, up = torch.ones(2, 8), torch.ones(8, 2)
-    wrapper = module._make_linear_wrapper(prev.forward, module.MaskContext(), down, up, module._KIND_UNIFORM, 2.5)
+    wrapper = module._make_linear_wrapper(prev.forward, module.MaskContext(), down, up, None, module._KIND_UNIFORM, 2.5)
     x = torch.ones(4, 8)
     expected = prev.forward(x) + (x @ down.T) @ up.T * 2.5
     assert torch.allclose(wrapper(x), expected)

@@ -1,7 +1,7 @@
 """H3 Modality LoRA Loader.
 
-Applies multiple MiniMax H3 LoRAs as masked additive deltas with per-row LoRA
-strength plus global audio/video/text strengths.
+Applies multiple MiniMax H3 LoRAs (including LoKr files) as masked additive
+deltas with per-row LoRA strength plus global audio/video/text strengths.
 
 Each supported Linear target gets a forward wrapper that adds the batched
 LoRA delta: attention/MLP projections (``qkv_proj``/``out_proj``/``fc1``/
@@ -55,6 +55,8 @@ _LORA_DOWN_SUFFIX = ".lora_down.weight"
 _PEFT_DOWN_SUFFIX = ".lora_A.weight"
 _LORA_UP_SUFFIX = ".lora_up.weight"
 _PEFT_UP_SUFFIX = ".lora_B.weight"
+_LOKR_W1_SUFFIX = ".lokr_w1"
+_LOKR_W2_SUFFIX = ".lokr_w2"
 _ALPHA_SUFFIX = ".alpha"
 
 _SUPPORTED_LINEAR_NAMES = {"qkv_proj", "out_proj", "fc1", "fc2", "linear",
@@ -177,13 +179,19 @@ def _parse_stack_data(stack_data):
 
 
 def _lora_module_paths(sd):
-    """Group LoRA down/up tensors by their target Linear module path.
+    """Group LoRA and LoKr tensors by their target Linear module path.
 
-    Accepts both the ``lora_down``/``lora_up`` and ``lora_A``/``lora_B`` key
-    conventions.  Returns a dict mapping module path (e.g.
-    ``diffusion_model.blocks.0.attn.qkv_proj``) to a ``(down, up, alpha)``
-    tuple.  ``down`` has shape ``[rank, in]`` and ``up`` has shape
-    ``[out, rank]``.
+    Accepts the ``lora_down``/``lora_up`` and ``lora_A``/``lora_B`` key
+    conventions plus LoKr files (``lokr_w1``/``lokr_w2``).  Returns a dict
+    mapping module path (e.g.
+    ``diffusion_model.blocks.0.attn.qkv_proj``) to a tagged spec:
+
+    - LoRA: ``("lora", down, up, alpha)`` where ``down`` has shape
+      ``[rank, in]`` and ``up`` has shape ``[out, rank]``.
+    - LoKr: ``("lokr", w1, w2)`` where ``w1`` has shape ``[r, r]`` and
+      ``w2`` has shape ``[out/r, in/r]``; the true delta is
+      ``kron(w1, w2)`` and the stored ``alpha`` is ignored (it is
+      uninitialized memory in LoKr files).
     """
     grouped = {}
     for key, value in sd.items():
@@ -199,11 +207,26 @@ def _lora_module_paths(sd):
         elif key.endswith(_PEFT_UP_SUFFIX):
             path = key[: -len(_PEFT_UP_SUFFIX)]
             grouped.setdefault(path, {})["up"] = value
+        elif key.endswith(_LOKR_W1_SUFFIX):
+            path = key[: -len(_LOKR_W1_SUFFIX)]
+            grouped.setdefault(path, {})["lokr_w1"] = value
+        elif key.endswith(_LOKR_W2_SUFFIX):
+            path = key[: -len(_LOKR_W2_SUFFIX)]
+            grouped.setdefault(path, {})["lokr_w2"] = value
         elif key.endswith(_ALPHA_SUFFIX):
             path = key[: -len(_ALPHA_SUFFIX)]
             grouped.setdefault(path, {})["alpha"] = value
     specs = {}
     for path, parts in grouped.items():
+        if "lokr_w1" in parts and "lokr_w2" in parts:
+            w1 = parts["lokr_w1"]
+            w2 = parts["lokr_w2"]
+            if not torch.is_tensor(w1) or not torch.is_tensor(w2):
+                continue
+            if w1.ndim != 2 or w2.ndim != 2:
+                continue
+            specs[path] = ("lokr", w1, w2)
+            continue
         if "down" not in parts or "up" not in parts:
             continue
         down = parts["down"]
@@ -219,8 +242,26 @@ def _lora_module_paths(sd):
             alpha = float(alpha)
         else:
             alpha = float(down.shape[0])
-        specs[path] = (down, up, alpha)
+        specs[path] = ("lora", down, up, alpha)
     return specs
+
+
+def _lokr_delta(x, w2, w1):
+    """Apply the compact LoKr delta ``x @ kron(w1, w2).T`` without
+    materializing the full ``[out, in]`` Kronecker matrix.
+
+    ``w1`` has shape ``[r, r]`` and ``w2`` has shape ``[out/r, in/r]``; the
+    result has shape ``[n, out]`` where ``out = r * out/r`` and
+    ``in = r * in/r``.  The Kronecker order matches the official LoKr loader
+    (``torch.kron(w1, w2)``), so the spatial pattern of the delta is identical.
+    """
+    r = w1.shape[0]
+    out_r, in_r = w2.shape
+    n = x.shape[0]
+    xr = x.reshape(n, r, in_r)
+    m1 = torch.einsum("njl,ij->nil", xr, w1)
+    res = torch.einsum("nil,kl->nik", m1, w2)
+    return res.reshape(n, r * out_r)
 
 
 def _build_rows_mask(layout, video, text, audio):
@@ -305,51 +346,73 @@ def _make_forward_wrapper(prev_forward, mask_context, dit, video, text, audio,
     return wrapper
 
 
-def _make_linear_wrapper(prev_forward, mask_context, a_cat, b_cat, kind, scale):
-    """Wrap a supported Linear forward to add the scaled batched LoRA delta.
+def _make_linear_wrapper(prev_forward, mask_context, a_cat, b_cat, lokr_specs, kind, scale):
+    """Wrap a supported Linear forward to add the scaled LoRA and LoKr deltas.
 
     ``a_cat`` has shape ``[sum(rank), in]`` (down matrices scaled by
-    ``alpha/rank * row_strength``) and ``b_cat`` has shape ``[out, sum(rank)]``.
-    The scaling happens on the ``[rows, sum(rank)]`` bottleneck and the result
-    is accumulated straight into the Linear's own output with ``addmm_``, which
-    keeps the mask multiply off the ``[rows, out]`` output and folds scalar
-    strengths into the gemm instead of a second elementwise pass:
+    ``alpha/rank * row_strength``) and ``b_cat`` has shape ``[out, sum(rank)]``;
+    either may be ``None`` when the target has no LoRA specs.  ``lokr_specs``
+    is a list of ``(w1, w2)`` pairs (``w1`` pre-scaled by the slot strength)
+    or ``None``/empty when the target has no LoKr specs.
+
+    The LoRA delta is accumulated with ``addmm_`` on the ``[rows, sum(rank)]``
+    bottleneck; the LoKr delta is accumulated with the compact Kronecker
+    einsum from :func:`_lokr_delta`.  Both honor the same kind/mask/scale
+    contract:
 
     - ``_KIND_ROWS`` scales per packed-sequence row by ``mask_context.mask``.
     - ``_KIND_T_EMB`` scales per unique-timestep row of the ``t_emb`` input
       (block and final-layer adaln) by ``mask_context.timestep_mask``.
-    - every other kind (``_KIND_REFINER``, the modality-dedicated
-      ``video_patch_proj``/``audio_patch_proj``/``video_out``/``audio_out``/
-      ``condition_proj`` targets, and ``_KIND_UNIFORM`` once the global
-      strengths are equal for the target) scales the whole delta by the single
-      global ``scale`` of the modality whose rows the Linear consumes.
+    - every other kind scales the whole delta by the single global ``scale``
+      of the modality whose rows the Linear consumes.
 
     ``prev_forward`` is always a ``comfy.ops.Linear`` forward or another one of
     these wrappers, so ``base`` is a freshly allocated tensor that is safe to
     accumulate into in place.
     """
     cache = {}
+    lokr_cache = {}
 
     def wrapper(x):
         base = prev_forward(x)
-        if a_cat is None:
+        if a_cat is None and not lokr_specs:
             return base
         key = (x.device.type, x.device.index, x.dtype)
-        runtime = cache.get(key)
-        if runtime is None:
-            runtime = (a_cat.to(device=x.device, dtype=x.dtype).T,
-                       b_cat.to(device=x.device, dtype=x.dtype).T)
-            cache[key] = runtime
-        a_t, b_t = runtime
-        if kind not in _MASKED_KINDS:
-            return base.addmm_(x @ a_t, b_t, alpha=scale)
-        if kind == _KIND_ROWS:
-            mask = mask_context.rows(x)
+        if kind in _MASKED_KINDS:
+            if kind == _KIND_ROWS:
+                mask = mask_context.rows(x)
+            else:
+                mask = mask_context.timestep(x)
+            if mask is None or mask.shape[0] != x.shape[0]:
+                return base
         else:
-            mask = mask_context.timestep(x)
-        if mask is None or mask.shape[0] != x.shape[0]:
-            return base
-        return base.addmm_((x @ a_t).mul_(mask[:, None]), b_t)
+            mask = None
+        if a_cat is not None:
+            runtime = cache.get(key)
+            if runtime is None:
+                runtime = (a_cat.to(device=x.device, dtype=x.dtype).T,
+                           b_cat.to(device=x.device, dtype=x.dtype).T)
+                cache[key] = runtime
+            a_t, b_t = runtime
+            if mask is None:
+                base.addmm_(x @ a_t, b_t, alpha=scale)
+            else:
+                base.addmm_((x @ a_t).mul_(mask[:, None]), b_t)
+        if lokr_specs:
+            cached = lokr_cache.get(key)
+            if cached is None:
+                cached = [(w1.to(device=x.device, dtype=x.dtype),
+                           w2.to(device=x.device, dtype=x.dtype))
+                          for w1, w2 in lokr_specs]
+                lokr_cache[key] = cached
+            if mask is None:
+                for w1, w2 in cached:
+                    base.add_(scale * _lokr_delta(x, w2, w1))
+            else:
+                x_masked = x * mask[:, None]
+                for w1, w2 in cached:
+                    base.add_(_lokr_delta(x_masked, w2, w1))
+        return base
     return wrapper
 
 
@@ -427,15 +490,21 @@ class H3ModalityLoraLoader:
             if not paths:
                 raise ValueError(
                     f"LoRA '{lora_name}' ({slot_label}) contains no valid LoRA "
-                    f"weights (expected lora_down/lora_up or lora_A/lora_B "
-                    f"tensor pairs)."
+                    f"weights (expected lora_down/lora_up, lora_A/lora_B or "
+                    f"lokr_w1/lokr_w2 tensor pairs)."
                 )
-            for path, (down, up, alpha) in paths.items():
-                # Convert path using key_map (handles both underscore and dot formats)
+            for path, spec in paths.items():
                 actual_path = key_map.get(path, path)
-                rank = int(down.shape[0])
-                scale = (alpha / rank) if rank else 0.0
-                layer_specs.setdefault(actual_path, []).append((down, up, scale, slot["str"]))
+                if spec[0] == "lora":
+                    _, down, up, alpha = spec
+                    rank = int(down.shape[0])
+                    lora_scale = (alpha / rank) if rank else 0.0
+                    layer_specs.setdefault(actual_path, []).append(
+                        ("lora", down, up, lora_scale, slot["str"]))
+                else:
+                    _, w1, w2 = spec
+                    layer_specs.setdefault(actual_path, []).append(
+                        ("lokr", w1, w2, slot["str"]))
 
         supported, unsupported = {}, set()
         for path, specs in layer_specs.items():
@@ -461,8 +530,16 @@ class H3ModalityLoraLoader:
         video_eq_audio = video == audio
         need_rows = need_timestep = False
         for path, specs in supported.items():
-            a_cat = torch.cat([down * (scale * row_str) for down, up, scale, row_str in specs], dim=0)
-            b_cat = torch.cat([up for _, up, _, _ in specs], dim=1)
+            lora_specs = [s for s in specs if s[0] == "lora"]
+            lokr_specs = [s for s in specs if s[0] == "lokr"]
+            a_cat = None
+            b_cat = None
+            if lora_specs:
+                a_cat = torch.cat([down * (scale * row_str)
+                                  for _, down, up, scale, row_str in lora_specs], dim=0)
+                b_cat = torch.cat([up for _, _, up, _, _ in lora_specs], dim=1)
+            lokr_pairs = [(w1 * row_str, w2)
+                         for _, w1, w2, row_str in lokr_specs] if lokr_specs else None
             kind, scale = self._resolve_target_kind(path, video, text, audio)
             if all_equal:
                 kind, scale = _KIND_UNIFORM, video
@@ -477,7 +554,7 @@ class H3ModalityLoraLoader:
             if prev_forward is None:
                 prev_forward = self._resolve_linear_forward(diffusion_model, path)
             patched.add_object_patch(path + ".forward", _make_linear_wrapper(
-                prev_forward, mask_context, a_cat, b_cat, kind, scale))
+                prev_forward, mask_context, a_cat, b_cat, lokr_pairs, kind, scale))
 
         # The row mask and the timestep mask are published by a single
         # top-level wrapper so every Linear target shares one mask source;
