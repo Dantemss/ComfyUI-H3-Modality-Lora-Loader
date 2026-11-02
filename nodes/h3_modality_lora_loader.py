@@ -29,6 +29,7 @@ import logging
 import torch
 import folder_paths
 import comfy.utils
+from comfy.patcher_extension import CallbacksMP
 from comfy.ldm.minimax.model import (
     AUDIO_COND_TIMESTEP,
     PackedLayout,
@@ -418,6 +419,12 @@ def _make_linear_wrapper(prev_forward, mask_context, a_cat, b_cat, lokr_specs, k
                 for w1, w2 in cached:
                     base.add_(_lokr_delta(x_masked, w2, w1))
         return base
+
+    def clear_caches():
+        cache.clear()
+        lokr_cache.clear()
+
+    wrapper.clear_caches = clear_caches
     return wrapper
 
 
@@ -534,6 +541,7 @@ class H3ModalityLoraLoader:
         all_equal = video == text == audio
         video_eq_audio = video == audio
         need_rows = need_timestep = False
+        clear_caches = []
         for path, specs in supported.items():
             lora_specs = [s for s in specs if s[0] == "lora"]
             lokr_specs = [s for s in specs if s[0] == "lokr"]
@@ -558,8 +566,10 @@ class H3ModalityLoraLoader:
             prev_forward = patched.object_patches.get(path + ".forward")
             if prev_forward is None:
                 prev_forward = self._resolve_linear_forward(diffusion_model, path)
-            patched.add_object_patch(path + ".forward", _make_linear_wrapper(
-                prev_forward, mask_context, a_cat, b_cat, lokr_pairs, kind, scale))
+            wrapper = _make_linear_wrapper(
+                prev_forward, mask_context, a_cat, b_cat, lokr_pairs, kind, scale)
+            clear_caches.append(wrapper.clear_caches)
+            patched.add_object_patch(path + ".forward", wrapper)
 
         # The row mask and the timestep mask are published by a single
         # top-level wrapper so every Linear target shares one mask source;
@@ -571,6 +581,15 @@ class H3ModalityLoraLoader:
             patched.add_object_patch("diffusion_model.forward", _make_forward_wrapper(
                 prev_forward, mask_context, diffusion_model, video, text, audio,
                 need_rows=need_rows, need_timestep=need_timestep))
+
+        # The delta caches are GPU tensors the memory manager never sees, so an
+        # unloaded model would keep them resident until GC; drop them on detach
+        # so a settings change frees the old stack's caches with the DiT.
+        if clear_caches:
+            def _on_detach(patcher, unpatch_all, _clears=clear_caches):
+                for clear in _clears:
+                    clear()
+            patched.add_callback(CallbacksMP.ON_DETACH, _on_detach)
 
         return (patched,)
 

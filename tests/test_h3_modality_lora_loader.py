@@ -96,6 +96,7 @@ class MockModelPatcher:
     def __init__(self, model):
         self.model = model
         self.object_patches = {}
+        self.callbacks = {}
 
     def clone(self):
         n = MockModelPatcher(self.model)
@@ -104,6 +105,9 @@ class MockModelPatcher:
 
     def add_object_patch(self, name, obj):
         self.object_patches[name] = obj
+
+    def add_callback(self, call_type, callback):
+        self.callbacks.setdefault(call_type, []).append(callback)
 
 
 class MockModel:
